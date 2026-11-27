@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   FileUp,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { getEnabledModulesForRole } from '../modules/registry';
+import LoadingSpinner from './ui/LoadingSpinner';
 import SafetyBanner from './SafetyBanner';
 
 const CORE_NAV_BY_ROLE = {
@@ -157,7 +158,10 @@ export default function AppLayout() {
       <main className="flex-1 p-4 sm:p-6 lg:p-8">
         <div className="mx-auto max-w-6xl space-y-6">
           <SafetyBanner />
-          <Outlet />
+          {/* Module pages are lazy-loaded; this is their shared fallback. */}
+          <Suspense fallback={<LoadingSpinner message="Loading module…" />}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
     </div>

@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle, FileSearch, XCircle } from 'lucide-react';
-import { downloadAuthorizedFile } from '../../api/client';
+import {
+  downloadAuthorizedFile,
+  getAuthorizedBlob,
+  isMissingResource,
+  isUnsupportedEndpoint,
+} from '../../api/client';
 import { documentSecurityApi } from '../../api/documentSecurity';
 import { documentsApi } from '../../api/documents';
+import { expectArray } from '../../api/shape';
 import DocumentSecurityPanel, { isDocumentCleared } from './DocumentSecurityPanel';
 import ConfidencePill from '../../components/ui/ConfidencePill';
 import DocumentPreview from '../../components/ui/DocumentPreview';
 import EmptyState from '../../components/ui/EmptyState';
 import ErrorBanner from '../../components/ui/ErrorBanner';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
+import SectionState, { failedSection, loadingSection, readySection } from '../../components/ui/SectionState';
 import PageHeader from '../../components/ui/PageHeader';
 import SectionCard from '../../components/ui/SectionCard';
 import StatusBadge from '../../components/ui/StatusBadge';
@@ -22,9 +29,10 @@ export default function DocumentIntelligencePage() {
   const [selected, setSelected] = useState(null);
   const [extraction, setExtraction] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [listState, setListState] = useState(loadingSection);
   const [extractionLoading, setExtractionLoading] = useState(false);
   const [error, setError] = useState('');
+  const [previewError, setPreviewError] = useState('');
   const [actionMsg, setActionMsg] = useState('');
   const [verifying, setVerifying] = useState(false);
 
@@ -42,19 +50,31 @@ export default function DocumentIntelligencePage() {
   const [uploading, setUploading] = useState(false);
 
   const loadDocuments = useCallback(async () => {
-    if (!patientId) return;
-    setLoading(true);
+    if (!patientId) {
+      setListState(failedSection(new Error('this account has no linked patient profile')));
+      return;
+    }
+    setListState(loadingSection());
     try {
-      const data = await documentsApi.list(patientId);
-      setDocuments(Array.isArray(data) ? data : []);
+      // A non-array success is a failure, not "no documents yet".
+      const data = expectArray(await documentsApi.list(patientId), 'your documents');
+      setDocuments(data);
+      setListState(readySection());
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      // Keep the documents already on screen and mark the refresh as failed.
+      setListState(failedSection(err));
     }
   }, [patientId]);
 
   useEffect(() => { loadDocuments(); }, [loadDocuments]);
+
+  // Object URLs are browser memory; revoke the previous one and on unmount.
+  useEffect(
+    () => () => {
+      if (previewUrl?.url) URL.revokeObjectURL(previewUrl.url);
+    },
+    [previewUrl]
+  );
 
   const loadSecurity = useCallback(
     async (documentId) => {
@@ -81,6 +101,7 @@ export default function DocumentIntelligencePage() {
     setExtraction(null);
     setPreviewUrl(null);
     setActionMsg('');
+    setPreviewError('');
     setSecurity(null);
     setSecurityError('');
 
@@ -93,8 +114,18 @@ export default function DocumentIntelligencePage() {
 
     setExtractionLoading(true);
     try {
-      const ext = await documentsApi.getExtraction(patientId, doc.id).catch(() => null);
+      const ext = await documentsApi.getExtraction(patientId, doc.id);
       setExtraction(ext);
+    } catch (err) {
+      // 404: this document has no extraction yet, which is normal for queued files.
+      // 501: the backend does not implement extraction at all.
+      // Anything else is a real failure and is reported.
+      setExtraction(null);
+      if (isUnsupportedEndpoint(err)) {
+        setError('Document extraction is not available on this server yet.');
+      } else if (!isMissingResource(err)) {
+        setError(`Could not load extraction: ${err.message}`);
+      }
     } finally {
       setExtractionLoading(false);
     }
@@ -168,20 +199,48 @@ export default function DocumentIntelligencePage() {
 
   const handlePreview = async (doc) => {
     if (!cleared) {
-      setError('This document has not been cleared by security screening, so its contents cannot be opened.');
+      setPreviewError(
+        'This document has not been cleared by security screening, so its contents cannot be opened.'
+      );
       return;
     }
+    setPreviewError('');
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '') || 'http://localhost:8000/api/v1'}/patients/${patientId}/documents/${doc.id}/download`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem('bridgecare_access_token')}` } }
+      // Same auth, timeout and 401-refresh rules as every other API call.
+      const blob = await getAuthorizedBlob(`/patients/${patientId}/documents/${doc.id}/download`, {
+        timeoutMs: 60000,
+      });
+      setPreviewUrl({
+        url: URL.createObjectURL(blob),
+        mimeType: doc.mime_type,
+        filename: doc.original_filename,
+      });
+    } catch (err) {
+      setPreviewError(`Could not load preview: ${err.message}`);
+    }
+  };
+
+  /**
+   * Downloading is a second, independent gate: the same cleared state that
+   * unlocks preview also unlocks the original file. The backend must enforce
+   * this itself — this is defence in depth, not authorization.
+   */
+  const handleDownload = async () => {
+    if (!selected) return;
+    if (!cleared) {
+      setPreviewError(
+        'This document has not been cleared by security screening, so it cannot be downloaded.'
       );
-      if (response.ok) {
-        const blob = await response.blob();
-        setPreviewUrl({ url: URL.createObjectURL(blob), mimeType: doc.mime_type, filename: doc.original_filename });
-      }
-    } catch {
-      setError('Could not load preview.');
+      return;
+    }
+    setPreviewError('');
+    try {
+      await downloadAuthorizedFile(
+        `/patients/${patientId}/documents/${selected.id}/download`,
+        selected.original_filename
+      );
+    } catch (err) {
+      setPreviewError(`Could not download the document: ${err.message}`);
     }
   };
 
@@ -213,8 +272,11 @@ export default function DocumentIntelligencePage() {
         )}
         <form onSubmit={handleUpload} className="mt-5 grid gap-4 sm:grid-cols-3">
           <div className="sm:col-span-3">
-            <label className="block text-sm font-medium text-slate-700">Select file</label>
+            <label htmlFor="doc-file" className="block text-sm font-medium text-slate-700">
+              Select file
+            </label>
             <input
+              id="doc-file"
               type="file"
               accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
               required
@@ -223,8 +285,11 @@ export default function DocumentIntelligencePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700">Category</label>
+            <label htmlFor="doc-category" className="block text-sm font-medium text-slate-700">
+              Category
+            </label>
             <select
+              id="doc-category"
               value={documentType}
               onChange={(e) => setDocumentType(e.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -238,8 +303,11 @@ export default function DocumentIntelligencePage() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700">Document Date</label>
+            <label htmlFor="doc-date" className="block text-sm font-medium text-slate-700">
+              Document Date
+            </label>
             <input
+              id="doc-date"
               type="date"
               value={documentDate}
               onChange={(e) => setDocumentDate(e.target.value)}
@@ -263,15 +331,20 @@ export default function DocumentIntelligencePage() {
         {/* Left: document list */}
         <SectionCard className="lg:col-span-2">
           <h2 className="text-lg font-semibold text-slate-900">Your Documents</h2>
-          {loading ? (
-            <LoadingSpinner message="Loading documents…" />
-          ) : documents.length === 0 ? (
+          <SectionState state={listState} label="your documents" onRetry={loadDocuments} />
+          {listState.status === 'error' && documents.length > 0 && (
+            <p className="mt-2 text-xs text-slate-500">
+              Showing documents loaded earlier; the latest refresh failed.
+            </p>
+          )}
+          {listState.status === 'ready' && documents.length === 0 && (
             <EmptyState
               icon={FileSearch}
               title="No documents yet"
               description="Upload a PDF or image to begin."
             />
-          ) : (
+          )}
+          {documents.length > 0 && (
             <div className="mt-4 divide-y divide-slate-100">
               {documents.map((doc) => (
                 <button
@@ -322,7 +395,13 @@ export default function DocumentIntelligencePage() {
                   <button
                     type="button"
                     onClick={() => handlePreview(selected)}
-                    className="text-xs font-medium text-brand-700 hover:underline"
+                    disabled={!cleared}
+                    title={
+                      cleared
+                        ? 'Render the document in an isolated frame'
+                        : 'Preview is disabled until security screening clears this file'
+                    }
+                    className="text-xs font-medium text-brand-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
                   >
                     Load preview
                   </button>
@@ -330,15 +409,37 @@ export default function DocumentIntelligencePage() {
                 {previewUrl ? (
                   <DocumentPreview {...previewUrl} className="mt-3" />
                 ) : (
-                  <p className="mt-2 text-xs text-slate-400">Click "Load preview" to render the document.</p>
+                  <p className="mt-2 text-xs text-slate-400">
+                    {cleared
+                      ? 'Click "Load preview" to render the document.'
+                      : 'Preview stays locked until security screening clears this file.'}
+                  </p>
                 )}
                 <button
                   type="button"
-                  onClick={() => downloadAuthorizedFile(`/patients/${patientId}/documents/${selected.id}/download`, selected.original_filename)}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  onClick={handleDownload}
+                  disabled={!cleared}
+                  title={
+                    cleared
+                      ? 'Download the original file'
+                      : 'Download is disabled until security screening clears this file'
+                  }
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Download original
                 </button>
+                {!cleared && (
+                  <p className="mt-2 text-xs font-medium text-amber-700">
+                    Download and preview are withheld: this file is not cleared by security
+                    screening. Pending, scanning, quarantined, rejected, inconclusive, missing or
+                    unavailable screening all count as not cleared.
+                  </p>
+                )}
+                {previewError && (
+                  <p role="alert" className="mt-2 text-xs font-medium text-red-700">
+                    {previewError}
+                  </p>
+                )}
               </SectionCard>
 
               {/* Extraction result */}
@@ -385,9 +486,15 @@ export default function DocumentIntelligencePage() {
                       <table className="w-full text-sm">
                         <thead className="bg-slate-50 text-xs text-slate-500">
                           <tr>
-                            <th className="px-4 py-2 text-left font-semibold">Field</th>
-                            <th className="px-4 py-2 text-left font-semibold">Extracted value</th>
-                            <th className="px-4 py-2 text-left font-semibold">Confidence</th>
+                            <th scope="col" className="px-4 py-2 text-left font-semibold">
+                              Field
+                            </th>
+                            <th scope="col" className="px-4 py-2 text-left font-semibold">
+                              Extracted value
+                            </th>
+                            <th scope="col" className="px-4 py-2 text-left font-semibold">
+                              Confidence
+                            </th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">

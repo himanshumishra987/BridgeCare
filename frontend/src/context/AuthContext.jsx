@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import {
+  SESSION_EXPIRED_EVENT,
   apiRequest,
   clearStoredTokens,
   getStoredTokens,
@@ -21,6 +22,11 @@ export function AuthProvider({ children }) {
     }
     try {
       const me = await apiRequest('/auth/me');
+      // A malformed user payload signs the session out instead of rendering a
+      // half-populated account with missing role/profile fields.
+      if (!me || typeof me !== 'object' || typeof me.role !== 'string' || !me.role) {
+        throw new Error('The server returned an unexpected account response.');
+      }
       setUser(me);
     } catch {
       clearStoredTokens();
@@ -34,11 +40,29 @@ export function AuthProvider({ children }) {
     loadCurrentUser();
   }, [loadCurrentUser]);
 
+  // The API client clears tokens when a refresh fails; drop the user too so
+  // ProtectedRoute redirects instead of leaving a signed-in shell that 401s.
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setUser(null);
+      setLoading(false);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, []);
+
   const login = async (email, password, expectedRole) => {
     const data = await apiRequest('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    // A malformed success must not store a token or a half-built user.
+    if (!data || typeof data.access_token !== 'string' || !data.access_token) {
+      throw new Error('The server returned an unexpected sign-in response.');
+    }
+    if (!data.user || typeof data.user !== 'object' || typeof data.user.role !== 'string') {
+      throw new Error('The server returned an unexpected account response.');
+    }
     // Reject a wrong-role sign-in before any token is stored
     if (expectedRole && data.user.role !== expectedRole) {
       throw new Error('This account does not match the selected role. Go back and choose another.');
@@ -53,6 +77,12 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    if (!data || typeof data.access_token !== 'string' || !data.access_token) {
+      throw new Error('The server returned an unexpected registration response.');
+    }
+    if (!data.user || typeof data.user !== 'object') {
+      throw new Error('The server returned an unexpected account response.');
+    }
     setStoredTokens(data.access_token, data.refresh_token);
     setUser(data.user);
     return data.user;
@@ -78,6 +108,10 @@ export function AuthProvider({ children }) {
       method: 'PATCH',
       body: JSON.stringify(payload),
     });
+    if (!updated || typeof updated !== 'object' || typeof updated.role !== 'string') {
+      // Keep the last known-good account rather than replacing it with garbage.
+      throw new Error('The server returned an unexpected account response.');
+    }
     setUser(updated);
     return updated;
   };

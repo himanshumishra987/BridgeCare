@@ -1,3 +1,4 @@
+import { lazy } from 'react';
 import {
   Activity,
   Bot,
@@ -10,15 +11,18 @@ import {
   Users,
 } from 'lucide-react';
 
-import DocumentIntelligencePage from './document-intelligence/DocumentIntelligencePage';
-import MedicalTimelinePage from './unified-phr/MedicalTimelinePage';
-import ClinicalSnapshotPage from './clinical-intelligence/ClinicalSnapshotPage';
-import BiomarkerTrendsPage from './biomarker-analytics/BiomarkerTrendsPage';
-import MedicationsPage from './medication-management/MedicationsPage';
-import HolisticHealthPage from './holistic-health/HolisticHealthPage';
-import FamilyHealthPage from './family-health/FamilyHealthPage';
-import AssistancePage from './patient-assistance/AssistancePage';
-import InsurancePage from './insurance-info/InsurancePage';
+// Module pages are loaded on first navigation so the entry chunk does not carry
+// every module (and their charts) up front. A <Suspense> boundary is provided by
+// AppLayout, and by ModulesPreview for the DEV preview routes.
+const DocumentIntelligencePage = lazy(() => import('./document-intelligence/DocumentIntelligencePage'));
+const MedicalTimelinePage = lazy(() => import('./unified-phr/MedicalTimelinePage'));
+const ClinicalSnapshotPage = lazy(() => import('./clinical-intelligence/ClinicalSnapshotPage'));
+const BiomarkerTrendsPage = lazy(() => import('./biomarker-analytics/BiomarkerTrendsPage'));
+const MedicationsPage = lazy(() => import('./medication-management/MedicationsPage'));
+const HolisticHealthPage = lazy(() => import('./holistic-health/HolisticHealthPage'));
+const FamilyHealthPage = lazy(() => import('./family-health/FamilyHealthPage'));
+const AssistancePage = lazy(() => import('./patient-assistance/AssistancePage'));
+const InsurancePage = lazy(() => import('./insurance-info/InsurancePage'));
 
 /**
  * Frontend Module Registry (Modules 01-09).

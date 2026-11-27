@@ -12,15 +12,27 @@ import {
   YAxis,
 } from 'recharts';
 import { biomarkersApi } from '../../api/biomarkers';
+import { asArray, expectArray } from '../../api/shape';
 import EmptyState from '../../components/ui/EmptyState';
-import ErrorBanner from '../../components/ui/ErrorBanner';
-import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import PageHeader from '../../components/ui/PageHeader';
 import SectionCard from '../../components/ui/SectionCard';
+import SectionState, { failedSection, loadingSection, readySection } from '../../components/ui/SectionState';
 import { useAuth } from '../../context/AuthContext';
 
 function BiomarkerChart({ series }) {
-  const hasData = series.measurements?.length > 0;
+  // A malformed series is reported, never dropped or charted as empty.
+  if (!series || typeof series !== 'object' || Array.isArray(series)) {
+    return (
+      <SectionCard>
+        <p role="alert" className="text-sm text-red-700">
+          A biomarker record was returned in an unexpected shape and cannot be charted.
+        </p>
+      </SectionCard>
+    );
+  }
+
+  const measurements = asArray(series.measurements);
+  const hasData = measurements.length > 0;
   const refLow = series.reference_range?.low;
   const refHigh = series.reference_range?.high;
 
@@ -44,10 +56,10 @@ function BiomarkerChart({ series }) {
       </div>
 
       {/* Pattern alerts */}
-      {series.alerts?.map((alert, i) => (
+      {asArray(series.alerts).map((alert, i) => (
         <div key={i} className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-          <span>{alert.message} {alert.explanation && `— ${alert.explanation}`}</span>
+          <span>{alert?.message || 'Pattern alert'} {alert?.explanation && `— ${alert.explanation}`}</span>
         </div>
       ))}
 
@@ -60,7 +72,7 @@ function BiomarkerChart({ series }) {
       ) : (
         <div className="mt-4 h-56">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={series.measurements} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <LineChart data={measurements} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis
                 dataKey="date"
@@ -121,21 +133,22 @@ export default function BiomarkerTrendsPage() {
   const patientId = user?.patient_profile?.id;
 
   const [biomarkers, setBiomarkers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [listState, setListState] = useState(loadingSection);
 
   const load = useCallback(async () => {
-    if (!patientId) return;
-    setLoading(true);
-    setError('');
+    if (!patientId) {
+      setListState(failedSection(new Error('this account has no linked patient profile')));
+      return;
+    }
+    setListState(loadingSection());
     try {
-      const data = await biomarkersApi.getAll(patientId);
-      setBiomarkers(Array.isArray(data) ? data : []);
+      // A non-array success is a failure, not "no biomarker data yet".
+      const data = expectArray(await biomarkersApi.getAll(patientId), 'your biomarker trends');
+      setBiomarkers(data);
+      setListState(readySection());
     } catch (err) {
-      setError(err.message);
-      setBiomarkers([]);
-    } finally {
-      setLoading(false);
+      // Charts already on screen stay; the failure is reported instead.
+      setListState(failedSection(err));
     }
   }, [patientId]);
 
@@ -147,11 +160,13 @@ export default function BiomarkerTrendsPage() {
         title="Biomarker Trends"
         subtitle="Longitudinal charts of your lab values with reference ranges and anomaly highlights."
       />
-      <ErrorBanner message={error} onDismiss={() => setError('')} />
-
-      {loading ? (
-        <LoadingSpinner message="Loading biomarker data…" />
-      ) : biomarkers.length === 0 ? (
+      <SectionState state={listState} label="your biomarker trends" onRetry={load} />
+      {listState.status === 'error' && biomarkers.length > 0 && (
+        <p className="text-xs text-slate-500">
+          Showing charts loaded earlier; the latest request failed.
+        </p>
+      )}
+      {listState.status === 'ready' && biomarkers.length === 0 && (
         <SectionCard>
           <EmptyState
             icon={Activity}
@@ -159,10 +174,14 @@ export default function BiomarkerTrendsPage() {
             description="Upload and verify lab reports to see trend charts here."
           />
         </SectionCard>
-      ) : (
+      )}
+      {biomarkers.length > 0 && (
         <div className="space-y-6">
-          {biomarkers.map((series) => (
-            <BiomarkerChart key={series.id || series.name} series={series} />
+          {biomarkers.map((series, index) => (
+            <BiomarkerChart
+              key={series?.id || series?.name || `series-${index}`}
+              series={series}
+            />
           ))}
         </div>
       )}

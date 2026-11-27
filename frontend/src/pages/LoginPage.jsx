@@ -74,8 +74,11 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700">Email</label>
+            <label htmlFor="login-email" className="block text-sm font-medium text-slate-700">
+              Email
+            </label>
             <input
+              id="login-email"
               type="email"
               required
               value={email}
@@ -86,12 +89,15 @@ export default function LoginPage() {
           </div>
           <div>
             <div className="flex items-center justify-between">
-              <label className="block text-sm font-medium text-slate-700">Password</label>
+              <label htmlFor="login-password" className="block text-sm font-medium text-slate-700">
+                Password
+              </label>
               <Link to="/forgot-password" className="text-xs font-medium text-brand-700 hover:underline">
                 Forgot password?
               </Link>
             </div>
             <input
+              id="login-password"
               type="password"
               required
               value={password}
@@ -109,10 +115,12 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-          <p className="font-semibold text-slate-700">Seeded local test account:</p>
-          <p className="mt-1">{TEST_ACCOUNTS[role]}</p>
-        </div>
+        {import.meta.env.DEV && (
+          <div className="mt-6 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+            <p className="font-semibold text-slate-700">Seeded local test account:</p>
+            <p className="mt-1">{TEST_ACCOUNTS[role]}</p>
+          </div>
+        )}
 
         <p className="mt-5 text-center text-sm text-slate-600">
           New to BridgeCare?{' '}

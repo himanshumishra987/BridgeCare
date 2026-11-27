@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, BellRing, ChevronDown, ChevronUp, Pill } from 'lucide-react';
 import { medicationsApi } from '../../api/medications';
+import { asArray, expectObject } from '../../api/shape';
 import EmptyState from '../../components/ui/EmptyState';
 import ErrorBanner from '../../components/ui/ErrorBanner';
-import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import PageHeader from '../../components/ui/PageHeader';
 import SectionCard from '../../components/ui/SectionCard';
+import SectionState, { failedSection, loadingSection, readySection } from '../../components/ui/SectionState';
 import StatusBadge from '../../components/ui/StatusBadge';
 import { useAuth } from '../../context/AuthContext';
 
@@ -111,21 +112,25 @@ export default function MedicationsPage() {
   const patientId = user?.patient_profile?.id;
 
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [listState, setListState] = useState(loadingSection);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
 
   const load = useCallback(async () => {
-    if (!patientId) return;
-    setLoading(true);
+    if (!patientId) {
+      setListState(failedSection(new Error('this account has no linked patient profile')));
+      return;
+    }
+    setListState(loadingSection());
     setError('');
     try {
-      const res = await medicationsApi.getAll(patientId);
+      // A non-object success is a failure, not "no current medications".
+      const res = expectObject(await medicationsApi.getAll(patientId), 'your medications');
       setData(res);
+      setListState(readySection());
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      // Previously loaded medications stay; the failure is reported on top.
+      setListState(failedSection(err));
     }
   }, [patientId]);
 
@@ -147,10 +152,11 @@ export default function MedicationsPage() {
     }
   };
 
-  const current = data?.current || [];
-  const previous = data?.previous || [];
-  const interactions = data?.interactions || [];
-  const duplicates = data?.duplicates || [];
+  const current = asArray(data?.current);
+  const previous = asArray(data?.previous);
+  const interactions = asArray(data?.interactions);
+  const duplicates = asArray(data?.duplicates);
+  const showBody = data !== null && (listState.status === 'ready' || listState.status === 'error');
 
   return (
     <div className="space-y-6">
@@ -165,9 +171,13 @@ export default function MedicationsPage() {
         </div>
       )}
 
-      {loading ? (
-        <LoadingSpinner message="Loading medications…" />
-      ) : (
+      <SectionState state={listState} label="your medications" onRetry={load} />
+      {listState.status === 'error' && showBody && (
+        <p className="text-xs text-slate-500">
+          Showing medications loaded earlier; the latest request failed.
+        </p>
+      )}
+      {showBody && (
         <>
           {/* Alerts */}
           {duplicates.length > 0 && (
@@ -176,7 +186,7 @@ export default function MedicationsPage() {
                 <AlertTriangle className="h-4 w-4" /> Duplicate molecule detected
               </p>
               {duplicates.map((d, i) => (
-                <p key={i} className="text-xs text-orange-700 pl-6">{d.message}</p>
+                <p key={i} className="text-xs text-orange-700 pl-6">{d?.message || 'Duplicate reported'}</p>
               ))}
             </div>
           )}
@@ -186,8 +196,8 @@ export default function MedicationsPage() {
                 <AlertTriangle className="h-4 w-4" /> Potential medication interactions
               </p>
               {interactions.map((ia, i) => (
-                <div key={ia.id ?? i} className="rounded-lg bg-white border border-red-100 px-3 py-2 text-xs text-red-700">
-                  <p className="font-medium">{ia.drugs?.join(' + ')}</p>
+                <div key={ia?.id ?? i} className="rounded-lg bg-white border border-red-100 px-3 py-2 text-xs text-red-700">
+                  <p className="font-medium">{asArray(ia?.drugs).join(' + ') || 'Interaction reported'}</p>
                   <p>{ia.description}</p>
                   <p className="mt-1 font-semibold text-red-900">Consult your doctor before changing any medication.</p>
                   <div className="mt-2 flex flex-wrap items-center gap-3">

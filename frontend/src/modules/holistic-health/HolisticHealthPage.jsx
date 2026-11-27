@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, HeartPulse, Leaf, Plus } from 'lucide-react';
 import { holisticApi } from '../../api/holistic';
+import { expectArray } from '../../api/shape';
 import EmptyState from '../../components/ui/EmptyState';
-import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import PageHeader from '../../components/ui/PageHeader';
 import SectionCard from '../../components/ui/SectionCard';
+import SectionState, { failedSection, loadingSection, readySection } from '../../components/ui/SectionState';
 import StatusBadge from '../../components/ui/StatusBadge';
 import { useAuth } from '../../context/AuthContext';
 
@@ -58,56 +59,43 @@ const buttonClass =
 const formatDate = (value) =>
   new Date(value).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' });
 
-// Loads a list and tracks its state: loading | ready | error | unavailable
-function useList(fetcher, patientId) {
-  const [state, setState] = useState({ items: [], status: 'loading', error: '' });
+// Loads a list and tracks its state: loading | ready | error | unavailable.
+//
+// CONTRACT STATUS (proposed, not confirmed by Shreyash):
+// - 501 is the only "capability not implemented" signal -> unavailable.
+// - 404 on these collection endpoints is a REQUEST FAILURE, not an empty list and
+//   not "not available". The old `err.status === 404 || /not found/i` reading is gone.
+// - There is no single-resource GET on this page, so the "404 means no record"
+//   case does not apply here.
+function useList(api, method, patientId) {
+  const [state, setState] = useState(loadingSection);
+  const [items, setItems] = useState([]);
 
   const refresh = useCallback(async () => {
     if (!patientId) return;
     try {
-      const data = await fetcher(patientId);
-      if (!Array.isArray(data)) throw new Error('Unexpected response from the server.');
-      setState({ items: data, status: 'ready', error: '' });
+      // A non-array success is a failure, not an empty collection.
+      const data = expectArray(await api[method](patientId), method === 'getHerbs' ? 'herbs and formulations' : method === 'getWarnings' ? 'herb-drug warnings' : 'holistic records');
+      setItems(data);
+      setState(readySection());
     } catch (err) {
-      const missing = err.status === 404 || /not found/i.test(err.message);
-      setState({ items: [], status: missing ? 'unavailable' : 'error', error: err.message });
+      // Items already loaded stay in memory; the failure is reported instead.
+      setState(failedSection(err));
     }
-  }, [fetcher, patientId]);
+  }, [api, method, patientId]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const retry = () => {
-    setState({ items: [], status: 'loading', error: '' });
+  const retry = useCallback(() => {
+    setState(loadingSection());
     refresh();
-  };
+  }, [refresh]);
 
-  return { ...state, refresh, retry };
+  return { items, status: state.status, error: state.error, httpStatus: state.httpStatus, refresh, retry };
 }
 
-// Wrappers keep the function identity stable and read the current API object
-const fetchRecords = (id) => holisticApi.getAll(id);
-const fetchHerbs = (id) => holisticApi.getHerbs(id);
-const fetchWarnings = (id) => holisticApi.getWarnings(id);
-
-function ListState({ list, loadingText, children }) {
-  if (list.status === 'loading') return <LoadingSpinner message={loadingText} />;
-  if (list.status === 'unavailable') {
-    return (
-      <p className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        Not available yet: the server does not provide this feature.
-      </p>
-    );
-  }
-  if (list.status === 'error') {
-    return (
-      <div role="alert" className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-        Could not load: {list.error}{' '}
-        <button type="button" onClick={list.retry} className="font-semibold underline">Retry</button>
-      </div>
-    );
-  }
-  return children;
-}
+// A list is rendered only for a success or for stale data after a failed refresh.
+const hasBody = (list) => list.status === 'ready' || (list.status === 'error' && list.items.length > 0);
 
 function AddForm({ label, fields, onSave }) {
   const [form, setForm] = useState(null); // null = closed
@@ -246,13 +234,15 @@ function Warnings({ list, records }) {
   );
 }
 
-export default function HolisticHealthPage({ previewPatientId }) {
+export default function HolisticHealthPage({ previewPatientId, api = holisticApi }) {
   const { user } = useAuth();
   const patientId = previewPatientId ?? user?.patient_profile?.id;
 
-  const records = useList(fetchRecords, patientId);
-  const herbs = useList(fetchHerbs, patientId);
-  const warnings = useList(fetchWarnings, patientId);
+  // `api` is injected by the DEV preview so it never has to mutate the shared
+  // holisticApi singleton. Production always passes the real service (default).
+  const records = useList(api, 'getAll', patientId);
+  const herbs = useList(api, 'getHerbs', patientId);
+  const warnings = useList(api, 'getWarnings', patientId);
 
   const [tab, setTab] = useState('ayush');
   const [msg, setMsg] = useState('');
@@ -261,13 +251,13 @@ export default function HolisticHealthPage({ previewPatientId }) {
   const filtered = records.items.filter((r) => r.system === tab);
 
   const saveRecord = async (data) => {
-    await holisticApi.addRecord(patientId, { ...data, system: tab });
+    await api.addRecord(patientId, { ...data, system: tab });
     setMsg('Record added. It is user-entered and not verified.');
     await Promise.all([records.refresh(), warnings.refresh()]);
   };
 
   const saveHerb = async (data) => {
-    await holisticApi.addHerb(patientId, data);
+    await api.addHerb(patientId, data);
     setMsg('Herb or formulation added. It is user-entered and not verified.');
     await Promise.all([herbs.refresh(), warnings.refresh()]);
   };
@@ -321,8 +311,15 @@ export default function HolisticHealthPage({ previewPatientId }) {
       </div>
 
       {tab === 'herbs' ? (
-        <ListState list={herbs} loadingText="Loading herbs and formulations…">
+        <>
+          <SectionState state={herbs} label="herbs and formulations" onRetry={herbs.retry} />
+          {hasBody(herbs) && (
           <div className="space-y-4">
+            {herbs.status === 'error' && (
+              <p className="text-xs text-slate-500">
+                Showing herbs loaded earlier; the latest request failed.
+              </p>
+            )}
             <AddForm key="herbs" label="Add herb or formulation" fields={HERB_FIELDS} onSave={saveHerb} />
             {herbs.items.length === 0 ? (
               <SectionCard>
@@ -346,10 +343,18 @@ export default function HolisticHealthPage({ previewPatientId }) {
               ))
             )}
           </div>
-        </ListState>
+          )}
+        </>
       ) : (
-        <ListState list={records} loadingText="Loading holistic records…">
+        <>
+          <SectionState state={records} label="holistic records" onRetry={records.retry} />
+          {hasBody(records) && (
           <div className="space-y-4">
+            {records.status === 'error' && (
+              <p className="text-xs text-slate-500">
+                Showing records loaded earlier; the latest request failed.
+              </p>
+            )}
             {tab !== 'allopathy' && (
               <AddForm
                 key={tab}
@@ -395,10 +400,10 @@ export default function HolisticHealthPage({ previewPatientId }) {
                   {rec.summary && <p className="mt-2 break-words text-sm text-slate-700">{rec.summary}</p>}
                   {rec.practitioner && <p className="mt-1 text-xs text-slate-500">Practitioner: {rec.practitioner}</p>}
                 </SectionCard>
-              ))
-            )}
+              )            ))}
           </div>
-        </ListState>
+          )}
+        </>
       )}
     </div>
   );

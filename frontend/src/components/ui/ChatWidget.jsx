@@ -76,7 +76,12 @@ export default function ChatWidget({
           {systemNote}
         </div>
       )}
-      <div className="min-h-48 max-h-96 flex-1 space-y-3 overflow-y-auto p-4">
+      <div
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation"
+        className="min-h-48 max-h-96 flex-1 space-y-3 overflow-y-auto p-4"
+      >
         {messages.length === 0 && (
           <p className="mt-8 text-center text-xs text-slate-400">
             Your conversation will appear here.
@@ -162,6 +167,7 @@ export default function ChatWidget({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
           placeholder={placeholder}
+          aria-label={placeholder}
           className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
           disabled={sending}
         />

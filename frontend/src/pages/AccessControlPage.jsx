@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { apiRequest } from '../api/client';
+import { accessGrantsApi } from '../api/accessGrants';
+import { asArray, expectArray } from '../api/shape';
+import SectionState, { failedSection, loadingSection, readySection } from '../components/ui/SectionState';
 import { useAuth } from '../context/AuthContext';
 
 const SCOPE_OPTIONS = [
@@ -12,30 +14,61 @@ const SCOPE_OPTIONS = [
   'audit:read',
 ];
 
+const noProfile = () => new Error('this account has no linked patient profile');
+
 export default function AccessControlPage() {
   const { user } = useAuth();
   const patientId = user?.patient_profile?.id;
   const [grants, setGrants] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  // Grants and audit logs load independently: one failing request is reported
+  // as that section's failure instead of hiding both behind one error.
+  const [grantsState, setGrantsState] = useState(loadingSection);
+  const [logsState, setLogsState] = useState(loadingSection);
   const [granteeEmail, setGranteeEmail] = useState('');
   const [grantType, setGrantType] = useState('navigator');
   const [scopes, setScopes] = useState(['documents:read']);
   const [expiryDate, setExpiryDate] = useState('');
   const [error, setError] = useState('');
 
-  const loadData = useCallback(async () => {
-    if (!patientId) return;
+  const loadGrants = useCallback(async () => {
+    if (!patientId) {
+      setGrantsState(failedSection(noProfile()));
+      return;
+    }
+    setGrantsState(loadingSection());
     try {
-      const [grantList, logs] = await Promise.all([
-        apiRequest('/access-grants'),
-        apiRequest(`/patients/${patientId}/audit-logs`),
-      ]);
-      setGrants(grantList);
-      setAuditLogs(logs);
+      // A non-array success is a failure, not "you have no grants".
+      const list = expectArray(await accessGrantsApi.list(), 'your access grants');
+      setGrants(list);
+      setGrantsState(readySection());
     } catch (err) {
-      setError(err.message);
+      // Previously loaded grants stay on screen, marked as stale.
+      setGrantsState(failedSection(err));
     }
   }, [patientId]);
+
+  const loadAuditLogs = useCallback(async () => {
+    if (!patientId) {
+      setLogsState(failedSection(noProfile()));
+      return;
+    }
+    setLogsState(loadingSection());
+    try {
+      const logs = expectArray(
+        await accessGrantsApi.listAuditLogs(patientId),
+        'the sharing audit log'
+      );
+      setAuditLogs(logs);
+      setLogsState(readySection());
+    } catch (err) {
+      setLogsState(failedSection(err));
+    }
+  }, [patientId]);
+
+  const loadData = useCallback(async () => {
+    await Promise.all([loadGrants(), loadAuditLogs()]);
+  }, [loadGrants, loadAuditLogs]);
 
   useEffect(() => {
     loadData();
@@ -51,15 +84,12 @@ export default function AccessControlPage() {
     e.preventDefault();
     setError('');
     try {
-      await apiRequest('/access-grants', {
-        method: 'POST',
-        body: JSON.stringify({
-          grantee_email: granteeEmail,
-          grant_type: grantType,
-          scopes,
-          // Optional: the backend may ignore or reject unsupported fields.
-          expires_at: expiryDate || null,
-        }),
+      await accessGrantsApi.create({
+        grantee_email: granteeEmail,
+        grant_type: grantType,
+        scopes,
+        // Optional: the backend may ignore or reject unsupported fields.
+        expires_at: expiryDate || null,
       });
       setGranteeEmail('');
       setExpiryDate('');
@@ -72,7 +102,7 @@ export default function AccessControlPage() {
   const handleRevoke = async (grantId) => {
     setError('');
     try {
-      await apiRequest(`/access-grants/${grantId}/revoke`, { method: 'POST' });
+      await accessGrantsApi.revoke(grantId);
       await loadData();
     } catch (err) {
       setError(err.message);
@@ -89,7 +119,10 @@ export default function AccessControlPage() {
         </p>
 
         {error && (
-          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div
+            role="alert"
+            className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
             {error}
           </div>
         )}
@@ -97,8 +130,11 @@ export default function AccessControlPage() {
         <form onSubmit={handleCreateGrant} className="mt-5 space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-slate-700">Grantee Email</label>
+              <label htmlFor="grant-email" className="block text-sm font-medium text-slate-700">
+                Grantee Email
+              </label>
               <input
+                id="grant-email"
                 type="email"
                 required
                 value={granteeEmail}
@@ -108,8 +144,11 @@ export default function AccessControlPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">Grant Type</label>
+              <label htmlFor="grant-type" className="block text-sm font-medium text-slate-700">
+                Grant Type
+              </label>
               <select
+                id="grant-type"
                 value={grantType}
                 onChange={(e) => setGrantType(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -119,10 +158,11 @@ export default function AccessControlPage() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">
+              <label htmlFor="grant-expiry" className="block text-sm font-medium text-slate-700">
                 Access expiry (optional)
               </label>
               <input
+                id="grant-expiry"
                 type="date"
                 value={expiryDate}
                 min={new Date().toLocaleDateString('en-CA')}
@@ -166,15 +206,24 @@ export default function AccessControlPage() {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Access Grants</h2>
-        {grants.length === 0 ? (
+        <SectionState state={grantsState} label="your access grants" onRetry={loadGrants} />
+        {grantsState.status === 'error' && grants.length > 0 && (
+          <p className="mt-2 text-xs text-slate-500">
+            Showing grants loaded earlier; the latest refresh failed.
+          </p>
+        )}
+        {grantsState.status === 'ready' && grants.length === 0 && (
           <p className="mt-3 text-sm text-slate-500">No access grants created yet.</p>
-        ) : (
+        )}
+        {grants.length > 0 && (
           <div className="mt-4 divide-y divide-slate-200">
             {grants.map((grant) => {
               const expired =
-                Boolean(grant.expires_at) &&
+                typeof grant.expires_at === 'string' &&
+                grant.expires_at !== '' &&
                 grant.expires_at < new Date().toLocaleDateString('en-CA');
               const effectiveStatus = expired && grant.status === 'active' ? 'expired' : grant.status;
+              const grantScopes = asArray(grant.scopes);
               return (
                 <div
                   key={grant.id}
@@ -182,11 +231,12 @@ export default function AccessControlPage() {
                 >
                   <div>
                     <p className="font-medium text-slate-900">
-                      {grant.grantee_name || 'Unnamed grantee'} ({grant.grantee_email})
+                      {grant.grantee_name || 'Unnamed grantee'} ({grant.grantee_email || 'no email reported'})
                     </p>
                     <p className="text-xs text-slate-500">
-                      Type: {grant.grant_type} · Scopes: {(grant.scopes || []).join(', ') || 'none'} ·
-                      Status: <span className="font-semibold">{effectiveStatus}</span>
+                      Type: {grant.grant_type || 'not reported'} · Scopes:{' '}
+                      {grantScopes.join(', ') || 'none'} · Status:{' '}
+                      <span className="font-semibold">{effectiveStatus || 'not reported'}</span>
                     </p>
                     <p className="text-xs text-slate-500">
                       {grant.expires_at
@@ -222,32 +272,48 @@ export default function AccessControlPage() {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Audit Log</h2>
-        <div className="mt-4 overflow-x-auto">
-          {auditLogs.length === 0 ? (
-            <p className="mt-3 text-sm text-slate-500">No sharing activity recorded yet.</p>
-          ) : (
-          <table className="w-full text-left text-xs text-slate-600">
-            <thead className="border-b border-slate-200 text-slate-500">
-              <tr>
-                <th className="py-2 pr-4">Action</th>
-                <th className="py-2 pr-4">Resource</th>
-                <th className="py-2 pr-4">Timestamp</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {auditLogs.map((log) => (
-                <tr key={log.id}>
-                  <td className="py-2 pr-4 font-medium text-slate-900">{log.action}</td>
-                  <td className="py-2 pr-4">
-                    {log.resource_type} {log.resource_id ? `(${log.resource_id.slice(0, 8)})` : ''}
-                  </td>
-                  <td className="py-2 pr-4">{new Date(log.created_at).toLocaleString()}</td>
+        <SectionState state={logsState} label="the sharing audit log" onRetry={loadAuditLogs} />
+        {logsState.status === 'error' && auditLogs.length > 0 && (
+          <p className="mt-2 text-xs text-slate-500">
+            Showing activity loaded earlier; the latest refresh failed.
+          </p>
+        )}
+        {logsState.status === 'ready' && auditLogs.length === 0 && (
+          <p className="mt-3 text-sm text-slate-500">No sharing activity recorded yet.</p>
+        )}
+        {auditLogs.length > 0 && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-600">
+              <thead className="border-b border-slate-200 text-slate-500">
+                <tr>
+                  <th scope="col" className="py-2 pr-4">
+                    Action
+                  </th>
+                  <th scope="col" className="py-2 pr-4">
+                    Resource
+                  </th>
+                  <th scope="col" className="py-2 pr-4">
+                    Timestamp
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          )}
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {auditLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="py-2 pr-4 font-medium text-slate-900">{log.action || '—'}</td>
+                    <td className="py-2 pr-4">
+                      {log.resource_type || '—'}{' '}
+                      {typeof log.resource_id === 'string' && log.resource_id
+                        ? `(${log.resource_id.slice(0, 8)})`
+                        : ''}
+                    </td>
+                    <td className="py-2 pr-4">{new Date(log.created_at).toLocaleString('en-IN')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

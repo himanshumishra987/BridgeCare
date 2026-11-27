@@ -1,7 +1,17 @@
 import { Calendar } from 'lucide-react';
+import { asArray } from '../../api/shape';
 import StatusBadge from './StatusBadge';
 
 export default function TimelineItem({ item, onClick }) {
+  // A malformed entry is reported instead of crashing the whole timeline.
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return (
+      <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        A timeline record was returned in an unexpected shape and cannot be displayed.
+      </p>
+    );
+  }
+
   return (
     <div className="relative flex gap-4">
       {/* Vertical line */}
@@ -26,9 +36,9 @@ export default function TimelineItem({ item, onClick }) {
         </div>
         <p className="mt-1 font-semibold text-slate-900">{item.title || item.document_type || 'Medical record'}</p>
         {item.summary && <p className="mt-1 text-sm text-slate-600 line-clamp-2">{item.summary}</p>}
-        {item.tags?.length > 0 && (
+        {asArray(item.tags).length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
-            {item.tags.map((tag) => (
+            {asArray(item.tags).map((tag) => (
               <span key={tag} className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{tag}</span>
             ))}
           </div>

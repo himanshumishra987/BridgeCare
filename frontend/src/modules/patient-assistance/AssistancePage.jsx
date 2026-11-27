@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, BellRing, Heart, Mic, MicOff, MapPin, Phone, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, Heart, MicOff, MapPin, Phone, Plus, Trash2 } from 'lucide-react';
 import { assistanceApi } from '../../api/assistance';
+import { isUnsupportedEndpoint } from '../../api/client';
 import { LANGUAGES } from '../../config/languages';
 import ChatWidget from '../../components/ui/ChatWidget';
 import EmptyState from '../../components/ui/EmptyState';
 import ErrorBanner from '../../components/ui/ErrorBanner';
-import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import PageHeader from '../../components/ui/PageHeader';
 import SectionCard from '../../components/ui/SectionCard';
+import SectionState from '../../components/ui/SectionState';
 import { useAuth } from '../../context/AuthContext';
+
+const loadingSection = () => ({ status: 'loading', error: '', httpStatus: null });
+
+const failedSection = (err) => ({
+  status: isUnsupportedEndpoint(err) ? 'unavailable' : 'error',
+  error: err.message,
+  httpStatus: err.status ?? null,
+});
 
 export default function AssistancePage() {
   const { user } = useAuth();
@@ -16,7 +25,10 @@ export default function AssistancePage() {
 
   const [profile, setProfile] = useState(null);
   const [reminders, setReminders] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // The profile and the reminder list load independently: a failed request shows
+  // its own error instead of silently rendering as an empty section.
+  const [profileState, setProfileState] = useState(loadingSection);
+  const [remindersState, setRemindersState] = useState(loadingSection);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
 
@@ -37,24 +49,48 @@ export default function AssistancePage() {
   const [hospitalState, setHospitalState] = useState('idle'); // idle | loading | ready | error | denied
   const [hospitalError, setHospitalError] = useState('');
 
-  const load = useCallback(async () => {
-    if (!patientId) return;
-    setLoading(true);
-    setError('');
+  const loadProfile = useCallback(async () => {
+    if (!patientId) {
+      setProfileState({
+        status: 'error',
+        error: 'this account has no linked patient profile',
+        httpStatus: null,
+      });
+      return;
+    }
+    setProfileState(loadingSection());
     try {
-      const [prof, rems] = await Promise.all([
-        assistanceApi.getEmergencyProfile(patientId).catch(() => null),
-        assistanceApi.getReminders(patientId).catch(() => []),
-      ]);
-      setProfile(prof);
+      const prof = await assistanceApi.getEmergencyProfile(patientId);
+      setProfile(prof || null);
       setContacts(prof?.emergency_contacts || '');
-      setReminders(Array.isArray(rems) ? rems : []);
+      setProfileState({ status: 'ready', error: '', httpStatus: null });
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      setProfileState(failedSection(err));
     }
   }, [patientId]);
+
+  const loadReminders = useCallback(async () => {
+    if (!patientId) {
+      setRemindersState({
+        status: 'error',
+        error: 'this account has no linked patient profile',
+        httpStatus: null,
+      });
+      return;
+    }
+    setRemindersState(loadingSection());
+    try {
+      const rems = await assistanceApi.getReminders(patientId);
+      setReminders(Array.isArray(rems) ? rems : []);
+      setRemindersState({ status: 'ready', error: '', httpStatus: null });
+    } catch (err) {
+      setRemindersState(failedSection(err));
+    }
+  }, [patientId]);
+
+  const load = useCallback(async () => {
+    await Promise.all([loadProfile(), loadReminders()]);
+  }, [loadProfile, loadReminders]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -103,7 +139,7 @@ export default function AssistancePage() {
       await assistanceApi.addReminder(patientId, { text: reminderText, scheduled_at: reminderTime || undefined });
       setReminderText('');
       setReminderTime('');
-      await load();
+      await loadReminders();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -114,7 +150,7 @@ export default function AssistancePage() {
   const handleDeleteReminder = async (id) => {
     try {
       await assistanceApi.deleteReminder(patientId, id);
-      await load();
+      await loadReminders();
     } catch (err) {
       setError(err.message);
     }
@@ -131,6 +167,8 @@ export default function AssistancePage() {
       setSavingContacts(false);
     }
   };
+
+  const profileReady = profileState.status === 'ready';
 
   return (
     <div className="space-y-6">
@@ -153,212 +191,231 @@ export default function AssistancePage() {
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{msg}</div>
       )}
 
-      {loading ? (
-        <LoadingSpinner message="Loading assistance…" />
-      ) : (
-        <>
-          {/* Emergency Health Summary */}
-          {profile && (
-            <SectionCard>
-              <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-                <Heart className="h-5 w-5 text-red-500" /> Emergency Health Summary
-              </h2>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                {[
-                  { label: 'Blood Group', value: profile.blood_group || user?.patient_profile?.blood_group },
-                  { label: 'Allergies', value: profile.allergies },
-                  { label: 'Key Conditions', value: profile.conditions },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{item.label}</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-900">{item.value || '—'}</p>
-                  </div>
-                ))}
+      {/* Emergency Health Summary */}
+      <SectionCard>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+          <Heart className="h-5 w-5 text-red-500" /> Emergency Health Summary
+        </h2>
+        <SectionState
+          state={profileState}
+          label="your emergency health summary"
+          onRetry={loadProfile}
+        />
+        {profileReady && !profile && (
+          <p className="mt-3 text-sm text-slate-500">
+            No emergency health summary is recorded yet.
+          </p>
+        )}
+        {profileReady && profile && (
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            {[
+              { label: 'Blood Group', value: profile.blood_group || user?.patient_profile?.blood_group },
+              { label: 'Allergies', value: profile.allergies },
+              { label: 'Key Conditions', value: profile.conditions },
+            ].map((item) => (
+              <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{item.label}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">{item.value || '—'}</p>
               </div>
-            </SectionCard>
-          )}
+            ))}
+          </div>
+        )}
+      </SectionCard>
 
-          {/* Emergency contacts */}
-          <SectionCard>
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-              <Phone className="h-5 w-5 text-brand-600" /> Emergency Contacts
-            </h2>
-            <textarea
-              value={contacts}
-              onChange={(e) => setContacts(e.target.value)}
-              rows={3}
-              placeholder="Name and phone number (e.g. Priya Sharma – +91 98765 43210)"
-              className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
-            />
+      {/* Emergency contacts */}
+      <SectionCard>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+          <Phone className="h-5 w-5 text-brand-600" /> Emergency Contacts
+        </h2>
+        <textarea
+          value={contacts}
+          onChange={(e) => setContacts(e.target.value)}
+          rows={3}
+          disabled={!profileReady}
+          aria-label="Emergency contacts"
+          placeholder="Name and phone number (e.g. Priya Sharma – +91 98765 43210)"
+          className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
+        />
+        <button
+          type="button"
+          onClick={handleSaveContacts}
+          disabled={savingContacts || !profileReady}
+          className="mt-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+        >
+          {savingContacts ? 'Saving…' : 'Save Contacts'}
+        </button>
+        {!profileReady && (
+          <p className="mt-2 text-xs text-slate-500">
+            Contacts are locked until the saved profile has loaded, so a failed request cannot
+            overwrite what the server already has.
+          </p>
+        )}
+      </SectionCard>
+
+      {/* Multilingual assistant */}
+      <SectionCard>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-slate-900">Health Assistant</h2>
+          <div className="flex items-center gap-2">
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value)}
+              aria-label="Assistant language"
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>{`${l.native} (${l.label})`}</option>
+              ))}
+            </select>
             <button
               type="button"
-              onClick={handleSaveContacts}
-              disabled={savingContacts}
-              className="mt-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+              disabled
+              title="Voice interaction requires backend integration — coming soon"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-400 cursor-not-allowed"
             >
-              {savingContacts ? 'Saving…' : 'Save Contacts'}
+              <MicOff className="h-4 w-4" /> Voice (unavailable)
             </button>
-          </SectionCard>
+          </div>
+        </div>
+        <div className="mt-3">
+          <ChatWidget
+            onSend={handleAsk}
+            placeholder="Ask about your medications, next appointment…"
+            systemNote="Answers based on your verified health records. Not medical advice."
+          />
+        </div>
+      </SectionCard>
 
-          {/* Multilingual assistant */}
-          <SectionCard>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold text-slate-900">Health Assistant</h2>
-              <div className="flex items-center gap-2">
-                <select
-                  value={lang}
-                  onChange={(e) => setLang(e.target.value)}
-                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
-                >
-                  {LANGUAGES.map((l) => (
-                    <option key={l.value} value={l.value}>{`${l.native} (${l.label})`}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  disabled
-                  title="Voice interaction requires backend integration — coming soon"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-400 cursor-not-allowed"
-                >
-                  <MicOff className="h-4 w-4" /> Voice (unavailable)
-                </button>
-              </div>
-            </div>
-            <div className="mt-3">
-              <ChatWidget
-                onSend={handleAsk}
-                placeholder="Ask about your medications, next appointment…"
-                systemNote="Answers based on your verified health records. Not medical advice."
-              />
-            </div>
-          </SectionCard>
+      {/* Reminders */}
+      <SectionCard>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+          <BellRing className="h-5 w-5 text-brand-600" /> Reminders
+        </h2>
+        <form onSubmit={handleAddReminder} className="mt-4 flex flex-wrap gap-3">
+          <input
+            type="text"
+            required
+            value={reminderText}
+            onChange={(e) => setReminderText(e.target.value)}
+            placeholder="Take blood pressure medication"
+            aria-label="Reminder text"
+            className="flex-1 min-w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          <input
+            type="datetime-local"
+            value={reminderTime}
+            onChange={(e) => setReminderTime(e.target.value)}
+            aria-label="Reminder date and time"
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          <button
+            type="submit"
+            disabled={addingReminder || remindersState.status === 'loading'}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+          >
+            <Plus className="h-4 w-4" /> Add
+          </button>
+        </form>
 
-          {/* Reminders */}
-          <SectionCard>
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-              <BellRing className="h-5 w-5 text-brand-600" /> Reminders
-            </h2>
-            <form onSubmit={handleAddReminder} className="mt-4 flex flex-wrap gap-3">
-              <input
-                type="text"
-                required
-                value={reminderText}
-                onChange={(e) => setReminderText(e.target.value)}
-                placeholder="Take blood pressure medication"
-                className="flex-1 min-w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-              <input
-                type="datetime-local"
-                value={reminderTime}
-                onChange={(e) => setReminderTime(e.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-              <button
-                type="submit"
-                disabled={addingReminder}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
-              >
-                <Plus className="h-4 w-4" /> Add
-              </button>
-            </form>
+        <SectionState state={remindersState} label="your reminders" onRetry={loadReminders} />
 
-            {reminders.length === 0 ? (
-              <EmptyState icon={BellRing} title="No reminders set" description="Add a reminder above." />
-            ) : (
-              <ul className="mt-4 divide-y divide-slate-100">
-                {reminders.map((rem) => (
-                  <li key={rem.id} className="flex items-center justify-between gap-3 py-3">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">{rem.text}</p>
-                      {rem.scheduled_at && (
-                        <p className="text-xs text-slate-500">
-                          {new Date(rem.scheduled_at).toLocaleString('en-IN')}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteReminder(rem.id)}
-                      className="text-red-500 hover:text-red-700"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </SectionCard>
-
-          {/* Nearby hospitals */}
-          <SectionCard>
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-              <MapPin className="h-5 w-5 text-brand-600" /> Nearby Hospitals
-            </h2>
-            <div className="mt-3 space-y-3">
-              <button
-                type="button"
-                onClick={findHospitals}
-                disabled={hospitalState === 'loading'}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
-              >
-                <MapPin className="h-4 w-4" />
-                {hospitalState === 'loading' ? 'Finding hospitals…' : 'Find hospitals near me'}
-              </button>
-              <p className="text-xs text-slate-500">
-                Uses your device location once, only to query the backend hospital directory.
-                BridgeCare does not rank or endorse any hospital.
-              </p>
-
-              {hospitalState === 'denied' && (
-                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  Location permission was refused, so nearby hospitals cannot be listed. In an
-                  emergency call 112 or your local emergency number.
-                </p>
-              )}
-              {hospitalState === 'error' && (
-                <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  Could not load hospitals: {hospitalError}{' '}
-                  <button type="button" onClick={findHospitals} className="font-semibold underline">
-                    Retry
-                  </button>
-                </p>
-              )}
-              {hospitalState === 'ready' && hospitals.length === 0 && (
-                <EmptyState
-                  icon={MapPin}
-                  title="No hospitals returned"
-                  description="The directory returned no results for your location."
-                />
-              )}
-              {hospitalState === 'ready' && hospitals.length > 0 && (
-                <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
-                  {hospitals.map((hospital, i) => (
-                    <li key={hospital.id ?? i} className="px-4 py-3 text-sm">
-                      <p className="font-semibold text-slate-900">
-                        {hospital.name || 'Hospital name not provided'}
+        {remindersState.status === 'ready' &&
+          (reminders.length === 0 ? (
+            <EmptyState icon={BellRing} title="No reminders set" description="Add a reminder above." />
+          ) : (
+            <ul className="mt-4 divide-y divide-slate-100">
+              {reminders.map((rem) => (
+                <li key={rem.id} className="flex items-center justify-between gap-3 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{rem.text}</p>
+                    {rem.scheduled_at && (
+                      <p className="text-xs text-slate-500">
+                        {new Date(rem.scheduled_at).toLocaleString('en-IN')}
                       </p>
-                      {hospital.address && (
-                        <p className="text-xs text-slate-600">{hospital.address}</p>
-                      )}
-                      <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                        {hospital.distance_km != null && (
-                          <span>{Number(hospital.distance_km).toFixed(1)} km away</span>
-                        )}
-                        {hospital.phone && (
-                          <a href={`tel:${hospital.phone}`} className="font-semibold text-brand-700">
-                            <Phone className="mr-1 inline h-3 w-3" />
-                            {hospital.phone}
-                          </a>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </SectionCard>
-        </>
-      )}
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteReminder(rem.id)}
+                    aria-label={`Delete reminder: ${rem.text}`}
+                    className="text-red-500 hover:text-red-700"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ))}
+      </SectionCard>
+
+      {/* Nearby hospitals */}
+      <SectionCard>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+          <MapPin className="h-5 w-5 text-brand-600" /> Nearby Hospitals
+        </h2>
+        <div className="mt-3 space-y-3">
+          <button
+            type="button"
+            onClick={findHospitals}
+            disabled={hospitalState === 'loading'}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+          >
+            <MapPin className="h-4 w-4" />
+            {hospitalState === 'loading' ? 'Finding hospitals…' : 'Find hospitals near me'}
+          </button>
+          <p className="text-xs text-slate-500">
+            Uses your device location once, only to query the backend hospital directory.
+            BridgeCare does not rank or endorse any hospital.
+          </p>
+
+          {hospitalState === 'denied' && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Location permission was refused, so nearby hospitals cannot be listed. In an
+              emergency call 112 or your local emergency number.
+            </p>
+          )}
+          {hospitalState === 'error' && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              Could not load hospitals: {hospitalError}{' '}
+              <button type="button" onClick={findHospitals} className="font-semibold underline">
+                Retry
+              </button>
+            </p>
+          )}
+          {hospitalState === 'ready' && hospitals.length === 0 && (
+            <EmptyState
+              icon={MapPin}
+              title="No hospitals returned"
+              description="The directory returned no results for your location."
+            />
+          )}
+          {hospitalState === 'ready' && hospitals.length > 0 && (
+            <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+              {hospitals.map((hospital, i) => (
+                <li key={hospital.id ?? i} className="px-4 py-3 text-sm">
+                  <p className="font-semibold text-slate-900">
+                    {hospital.name || 'Hospital name not provided'}
+                  </p>
+                  {hospital.address && (
+                    <p className="text-xs text-slate-600">{hospital.address}</p>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                    {hospital.distance_km != null && (
+                      <span>{Number(hospital.distance_km).toFixed(1)} km away</span>
+                    )}
+                    {hospital.phone && (
+                      <a href={`tel:${hospital.phone}`} className="font-semibold text-brand-700">
+                        <Phone className="mr-1 inline h-3 w-3" />
+                        {hospital.phone}
+                      </a>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </SectionCard>
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { FileUp, Shield, UserCheck } from 'lucide-react';
-import { apiRequest } from '../api/client';
+import { accessGrantsApi } from '../api/accessGrants';
+import { documentsApi } from '../api/documents';
 import { useAuth } from '../context/AuthContext';
 import { MODULE_REGISTRY } from '../modules/registry';
 
@@ -10,18 +11,32 @@ export default function PatientDashboard() {
   const patientId = user?.patient_profile?.id;
   const [docCount, setDocCount] = useState(0);
   const [grantCount, setGrantCount] = useState(0);
+  const [statsError, setStatsError] = useState('');
 
   useEffect(() => {
     if (!patientId) return;
-    Promise.all([
-      apiRequest(`/patients/${patientId}/documents`).catch(() => []),
-      apiRequest('/access-grants').catch(() => []),
-    ]).then(([docs, grants]) => {
-      setDocCount(Array.isArray(docs) ? docs.length : 0);
-      setGrantCount(
-        Array.isArray(grants) ? grants.filter((g) => g.status === 'active').length : 0
-      );
-    });
+    let cancelled = false;
+    Promise.allSettled([documentsApi.list(patientId), accessGrantsApi.list()]).then(
+      ([docs, grants]) => {
+        if (cancelled) return;
+        // A failed count is reported, never shown as a confident zero.
+        const failed = [docs, grants].filter((r) => r.status === 'rejected');
+        if (failed.length > 0) {
+          setStatsError('Some dashboard counts could not be loaded.');
+        } else {
+          setStatsError('');
+        }
+        if (docs.status === 'fulfilled' && Array.isArray(docs.value)) {
+          setDocCount(docs.value.length);
+        }
+        if (grants.status === 'fulfilled' && Array.isArray(grants.value)) {
+          setGrantCount(grants.value.filter((g) => g.status === 'active').length);
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
   }, [patientId]);
 
   return (
@@ -31,6 +46,12 @@ export default function PatientDashboard() {
         <p className="mt-1 text-sm text-slate-600">
           Patient Portal · Foundation ready for document upload, explicit consent, and audit logs.
         </p>
+
+        {statsError && (
+          <p role="status" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {statsError}
+          </p>
+        )}
 
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           <Link

@@ -58,8 +58,11 @@ export default function ProfileSetupPage() {
 
       <form onSubmit={handleSubmit} className="mt-6 grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2">
-          <label className="block text-sm font-medium text-slate-700">Full name</label>
+          <label htmlFor="profile-name" className="block text-sm font-medium text-slate-700">
+            Full name
+          </label>
           <input
+            id="profile-name"
             type="text"
             required
             value={form.name}
@@ -69,8 +72,11 @@ export default function ProfileSetupPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700">Preferred Language</label>
+          <label htmlFor="profile-language" className="block text-sm font-medium text-slate-700">
+            Preferred Language
+          </label>
           <select
+            id="profile-language"
             value={form.preferred_language}
             onChange={(e) => setForm({ ...form, preferred_language: e.target.value })}
             className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -84,8 +90,11 @@ export default function ProfileSetupPage() {
         {user?.role === 'patient' && (
           <>
             <div>
-              <label className="block text-sm font-medium text-slate-700">Date of Birth or Age</label>
+              <label htmlFor="profile-dob" className="block text-sm font-medium text-slate-700">
+                Date of Birth or Age
+              </label>
               <input
+                id="profile-dob"
                 type="text"
                 value={form.dob_or_age}
                 onChange={(e) => setForm({ ...form, dob_or_age: e.target.value })}
@@ -94,8 +103,11 @@ export default function ProfileSetupPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">Gender</label>
+              <label htmlFor="profile-gender" className="block text-sm font-medium text-slate-700">
+                Gender
+              </label>
               <input
+                id="profile-gender"
                 type="text"
                 value={form.gender}
                 onChange={(e) => setForm({ ...form, gender: e.target.value })}
@@ -103,8 +115,11 @@ export default function ProfileSetupPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">Blood Group</label>
+              <label htmlFor="profile-blood-group" className="block text-sm font-medium text-slate-700">
+                Blood Group
+              </label>
               <input
+                id="profile-blood-group"
                 type="text"
                 value={form.blood_group}
                 onChange={(e) => setForm({ ...form, blood_group: e.target.value })}
@@ -113,8 +128,11 @@ export default function ProfileSetupPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">Phone</label>
+              <label htmlFor="profile-phone" className="block text-sm font-medium text-slate-700">
+                Phone
+              </label>
               <input
+                id="profile-phone"
                 type="text"
                 value={form.phone}
                 onChange={(e) => setForm({ ...form, phone: e.target.value })}
@@ -122,8 +140,11 @@ export default function ProfileSetupPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="block text-sm font-medium text-slate-700">Emergency Contact</label>
+              <label htmlFor="profile-emergency-contact" className="block text-sm font-medium text-slate-700">
+                Emergency Contact
+              </label>
               <input
+                id="profile-emergency-contact"
                 type="text"
                 value={form.emergency_contact}
                 onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })}

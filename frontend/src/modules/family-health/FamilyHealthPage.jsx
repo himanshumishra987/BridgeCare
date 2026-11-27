@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Clock, Eye, Shield, Users } from 'lucide-react';
+import { Clock, Eye, History, Shield, Users } from 'lucide-react';
 import { familyApi } from '../../api/family';
+import { isUnsupportedEndpoint } from '../../api/client';
 import EmptyState from '../../components/ui/EmptyState';
 import ErrorBanner from '../../components/ui/ErrorBanner';
-import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import PageHeader from '../../components/ui/PageHeader';
 import SectionCard from '../../components/ui/SectionCard';
+import SectionState from '../../components/ui/SectionState';
 import StatusBadge from '../../components/ui/StatusBadge';
 import { useAuth } from '../../context/AuthContext';
 
@@ -17,13 +18,24 @@ const SCOPE_OPTIONS = [
   'medications:read',
 ];
 
+const loadingSection = () => ({ status: 'loading', error: '', httpStatus: null });
+
+const failedSection = (err) => ({
+  status: isUnsupportedEndpoint(err) ? 'unavailable' : 'error',
+  error: err.message,
+  httpStatus: err.status ?? null,
+});
+
 export default function FamilyHealthPage() {
   const { user } = useAuth();
   const patientId = user?.patient_profile?.id;
 
   const [members, setMembers] = useState([]);
   const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Members and sharing history load independently, so one failing request is
+  // reported as an error instead of looking like an empty list.
+  const [membersState, setMembersState] = useState(loadingSection);
+  const [historyState, setHistoryState] = useState(loadingSection);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
 
@@ -36,23 +48,47 @@ export default function FamilyHealthPage() {
   // Preview scope filter
   const [previewMember, setPreviewMember] = useState(null);
 
-  const load = useCallback(async () => {
-    if (!patientId) return;
-    setLoading(true);
-    setError('');
+  const loadMembers = useCallback(async () => {
+    if (!patientId) {
+      setMembersState({
+        status: 'error',
+        error: 'this account has no linked patient profile',
+        httpStatus: null,
+      });
+      return;
+    }
+    setMembersState(loadingSection());
     try {
-      const [mem, hist] = await Promise.all([
-        familyApi.getMembers(patientId).catch(() => []),
-        familyApi.getSharingHistory(patientId).catch(() => []),
-      ]);
+      const mem = await familyApi.getMembers(patientId);
       setMembers(Array.isArray(mem) ? mem : []);
-      setHistory(Array.isArray(hist) ? hist : []);
+      setMembersState({ status: 'ready', error: '', httpStatus: null });
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      setMembersState(failedSection(err));
     }
   }, [patientId]);
+
+  const loadHistory = useCallback(async () => {
+    if (!patientId) {
+      setHistoryState({
+        status: 'error',
+        error: 'this account has no linked patient profile',
+        httpStatus: null,
+      });
+      return;
+    }
+    setHistoryState(loadingSection());
+    try {
+      const hist = await familyApi.getSharingHistory(patientId);
+      setHistory(Array.isArray(hist) ? hist : []);
+      setHistoryState({ status: 'ready', error: '', httpStatus: null });
+    } catch (err) {
+      setHistoryState(failedSection(err));
+    }
+  }, [patientId]);
+
+  const load = useCallback(async () => {
+    await Promise.all([loadMembers(), loadHistory()]);
+  }, [loadMembers, loadHistory]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -107,8 +143,11 @@ export default function FamilyHealthPage() {
         <form onSubmit={handleRequest} className="mt-4 space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-slate-700">Family member email</label>
+              <label htmlFor="family-email" className="block text-sm font-medium text-slate-700">
+                Family member email
+              </label>
               <input
+                id="family-email"
                 type="email"
                 required
                 value={email}
@@ -118,8 +157,11 @@ export default function FamilyHealthPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">Access expiry (optional)</label>
+              <label htmlFor="family-expiry" className="block text-sm font-medium text-slate-700">
+                Access expiry (optional)
+              </label>
               <input
+                id="family-expiry"
                 type="date"
                 value={expiryDate}
                 onChange={(e) => setExpiryDate(e.target.value)}
@@ -158,97 +200,111 @@ export default function FamilyHealthPage() {
       {/* Members */}
       <SectionCard>
         <h2 className="text-lg font-semibold text-slate-900">Family Members with Access</h2>
-        {loading ? (
-          <LoadingSpinner />
-        ) : members.length === 0 ? (
-          <EmptyState
-            icon={Users}
-            title="No family access grants yet"
-            description="Use the form above to share your records with a family member."
-          />
-        ) : (
-          <div className="mt-4 divide-y divide-slate-100">
-            {members.map((m) => (
-              <div key={m.grant_id || m.id} className="flex flex-wrap items-center justify-between gap-3 py-4">
-                <div>
-                  <p className="font-semibold text-slate-900">{m.name || m.email}</p>
-                  <p className="text-xs text-slate-500">
-                    Scopes: {(m.scopes || []).join(', ')}
-                  </p>
-                  {m.expires_at && (
-                    <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
-                      <Clock className="h-3 w-3" />
-                      Expires {new Date(m.expires_at).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}
+        <SectionState state={membersState} label="family access grants" onRetry={loadMembers} />
+        {membersState.status === 'ready' &&
+          (members.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title="No family access grants yet"
+              description="Use the form above to share your records with a family member."
+            />
+          ) : (
+            <div className="mt-4 divide-y divide-slate-100">
+              {members.map((m) => (
+                <div key={m.grant_id || m.id} className="flex flex-wrap items-center justify-between gap-3 py-4">
+                  <div>
+                    <p className="font-semibold text-slate-900">{m.name || m.email}</p>
+                    <p className="text-xs text-slate-500">
+                      Scopes: {(m.scopes || []).join(', ')}
                     </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge status={m.status} />
-                  <button
-                    type="button"
-                    onClick={() => setPreviewMember(previewMember?.id === m.id ? null : m)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                  >
-                    <Eye className="h-3.5 w-3.5" />
-                    Preview
-                  </button>
-                  {m.status === 'active' && (
+                    {m.expires_at && (
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                        <Clock className="h-3 w-3" />
+                        Expires {new Date(m.expires_at).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <StatusBadge status={m.status} />
                     <button
                       type="button"
-                      onClick={() => handleRevoke(m.grant_id || m.id)}
-                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                      onClick={() => setPreviewMember(previewMember?.id === m.id ? null : m)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                     >
-                      Revoke
+                      <Eye className="h-3.5 w-3.5" />
+                      Preview
                     </button>
+                    {m.status === 'active' && (
+                      <button
+                        type="button"
+                        onClick={() => handleRevoke(m.grant_id || m.id)}
+                        className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Consent-aware preview */}
+                  {previewMember?.id === m.id && (
+                    <div className="w-full mt-2 rounded-xl border border-brand-200 bg-brand-50 p-3">
+                      <p className="text-xs font-semibold text-brand-800 flex items-center gap-1">
+                        <Shield className="h-3.5 w-3.5" /> This member can only see:
+                      </p>
+                      <ul className="mt-1 list-disc pl-4 text-xs text-brand-700 space-y-0.5">
+                        {(m.scopes || []).map((s) => <li key={s}>{s}</li>)}
+                      </ul>
+                      <p className="mt-2 text-xs text-brand-600">
+                        Records outside these scopes are completely hidden from their view.
+                      </p>
+                    </div>
                   )}
                 </div>
-
-                {/* Consent-aware preview */}
-                {previewMember?.id === m.id && (
-                  <div className="w-full mt-2 rounded-xl border border-brand-200 bg-brand-50 p-3">
-                    <p className="text-xs font-semibold text-brand-800 flex items-center gap-1">
-                      <Shield className="h-3.5 w-3.5" /> This member can only see:
-                    </p>
-                    <ul className="mt-1 list-disc pl-4 text-xs text-brand-700 space-y-0.5">
-                      {(m.scopes || []).map((s) => <li key={s}>{s}</li>)}
-                    </ul>
-                    <p className="mt-2 text-xs text-brand-600">
-                      Records outside these scopes are completely hidden from their view.
-                    </p>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          ))}
       </SectionCard>
 
       {/* Sharing audit history */}
-      {history.length > 0 && (
-        <SectionCard>
-          <h2 className="text-lg font-semibold text-slate-900">Sharing Activity</h2>
-          <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
-            <table className="w-full text-left text-xs text-slate-600">
-              <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
-                <tr>
-                  <th className="px-4 py-2">Action</th>
-                  <th className="px-4 py-2">Resource</th>
-                  <th className="px-4 py-2">When</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {history.map((log) => (
-                  <tr key={log.id}>
-                    <td className="px-4 py-2 font-medium text-slate-800">{log.action}</td>
-                    <td className="px-4 py-2">{log.resource_type}</td>
-                    <td className="px-4 py-2">{new Date(log.created_at).toLocaleString('en-IN')}</td>
+      <SectionCard>
+        <h2 className="text-lg font-semibold text-slate-900">Sharing Activity</h2>
+        <SectionState state={historyState} label="sharing activity" onRetry={loadHistory} />
+        {historyState.status === 'ready' &&
+          (history.length === 0 ? (
+            <EmptyState
+              icon={History}
+              title="No sharing activity yet"
+              description="Consent requests, views and revocations appear here once they are recorded."
+            />
+          ) : (
+            <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+              <table className="w-full text-left text-xs text-slate-600">
+                <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                  <tr>
+                    <th scope="col" className="px-4 py-2">
+                      Action
+                    </th>
+                    <th scope="col" className="px-4 py-2">
+                      Resource
+                    </th>
+                    <th scope="col" className="px-4 py-2">
+                      When
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </SectionCard>
-      )}
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {history.map((log) => (
+                    <tr key={log.id}>
+                      <td className="px-4 py-2 font-medium text-slate-800">{log.action}</td>
+                      <td className="px-4 py-2">{log.resource_type}</td>
+                      <td className="px-4 py-2">{new Date(log.created_at).toLocaleString('en-IN')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+      </SectionCard>
     </div>
   );
 }

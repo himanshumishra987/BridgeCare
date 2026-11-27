@@ -29,3 +29,23 @@ export const documentSecurityApi = {
   retry: (patientId, documentId) =>
     apiRequest(`${documentPath(patientId, documentId)}/retry`, { method: 'POST' }),
 };
+
+/**
+ * Resolve the screening decision for every document in a list.
+ *
+ * A lookup that fails is stored as `null`, and `isDocumentCleared(null)` is
+ * false, so an unavailable scanner/endpoint can never unlock a file. The UI
+ * labels those rows as "screening status unavailable" rather than hiding them.
+ */
+export async function getSecurityForDocuments(patientId, documents) {
+  const entries = await Promise.all(
+    documents.map(async (doc) => {
+      try {
+        return [doc.id, await documentSecurityApi.get(patientId, doc.id)];
+      } catch {
+        return [doc.id, null];
+      }
+    })
+  );
+  return Object.fromEntries(entries);
+}

@@ -1,4 +1,4 @@
-import { Component } from 'react';
+import { Component, Suspense } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import { MODULE_REGISTRY } from '../modules/registry';
@@ -26,7 +26,7 @@ const PREVIEW_AUTH = {
 // Extra previews that work with records kept in browser memory
 const EXTRA_LINKS = {
   'holistic-health': { to: '/preview/holistic', text: 'Try adding records (no backend needed)' },
-  'insurance-info': { to: '/preview/insurance', text: 'New Medical Card page' },
+  'insurance-info': { to: '/preview/insurance', text: 'Try it with records kept in browser memory' },
 };
 
 class PageErrorBoundary extends Component {
@@ -63,7 +63,9 @@ export default function ModulesPreview() {
             {selected?.component ? (
               <AuthContext.Provider value={PREVIEW_AUTH}>
                 <PageErrorBoundary key={selected.id}>
-                  <selected.component />
+                  <Suspense fallback={<p className="text-sm text-slate-500">Loading module…</p>}>
+                    <selected.component />
+                  </Suspense>
                 </PageErrorBoundary>
               </AuthContext.Provider>
             ) : (

@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { holisticApi } from '../api/holistic';
+import { useState } from 'react';
 
 // Finds the module page whatever its folder is called
 const modules = import.meta.glob('../modules/*/HolisticHealthPage.jsx', { eager: true });
@@ -29,26 +28,23 @@ function createMemoryApi(showSample) {
     addHerb: add('herbs'),
     getWarnings: async () => {
       if (showSample.current) return [SAMPLE_WARNING];
-      throw new Error('Not Found'); // no interaction check in preview
+      // Interaction checking is not part of preview mode. 501 is the contract's
+      // "capability not implemented" signal, so the UI says so instead of
+      // claiming there are no interactions.
+      throw Object.assign(new Error('Interaction warnings are not available in preview mode.'), {
+        status: 501,
+      });
     },
   };
 }
 
 export default function HolisticPreview() {
-  const [ready, setReady] = useState(false);
-  const [showSample] = useState({ current: false });
+  const [showSample, setShowSample] = useState(false);
+  const [sampleToggle] = useState(() => ({ current: false }));
+  const [memoryApi] = useState(() => createMemoryApi(sampleToggle));
   const [version, setVersion] = useState(0);
 
-  useEffect(() => {
-    const original = { ...holisticApi };
-    Object.assign(holisticApi, createMemoryApi(showSample));
-    setReady(true);
-    // Put the real API back when leaving the preview
-    return () => Object.assign(holisticApi, original);
-  }, [showSample]);
-
   if (!HolisticHealthPage) return <p className="p-6">HolisticHealthPage.jsx was not found in src/modules.</p>;
-  if (!ready) return null;
 
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-6">
@@ -59,14 +55,17 @@ export default function HolisticPreview() {
             type="button"
             className="underline"
             onClick={() => {
-              showSample.current = !showSample.current;
-              setVersion(version + 1);
+              const next = !showSample;
+              sampleToggle.current = next;
+              setShowSample(next);
+              setVersion((v) => v + 1);
             }}
           >
-            {showSample.current ? 'Hide sample warning' : 'Show sample warning'}
+            {showSample ? 'Hide sample warning' : 'Show sample warning'}
           </button>
         </div>
-        <HolisticHealthPage key={version} previewPatientId="preview" />
+        {/* The memory service is passed as a prop; the shared holisticApi is never touched. */}
+        <HolisticHealthPage key={version} previewPatientId="preview" api={memoryApi} />
       </div>
     </div>
   );

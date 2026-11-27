@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { History, Search } from 'lucide-react';
 import { timelineApi } from '../../api/timeline';
+import { asArray, expectArray } from '../../api/shape';
 import EmptyState from '../../components/ui/EmptyState';
-import ErrorBanner from '../../components/ui/ErrorBanner';
-import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import PageHeader from '../../components/ui/PageHeader';
+import SectionState, { failedSection, loadingSection, readySection } from '../../components/ui/SectionState';
 import SectionCard from '../../components/ui/SectionCard';
 import StatusBadge from '../../components/ui/StatusBadge';
 import TimelineItem from '../../components/ui/TimelineItem';
@@ -25,28 +25,30 @@ export default function MedicalTimelinePage() {
 
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [listState, setListState] = useState(loadingSection);
+  const [episodeError, setEpisodeError] = useState('');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [verifiedOnly, setVerifiedOnly] = useState(false);
 
   const loadTimeline = useCallback(async () => {
-    if (!patientId) return;
-    setLoading(true);
-    setError('');
+    if (!patientId) {
+      setListState(failedSection(new Error('this account has no linked patient profile')));
+      return;
+    }
+    setListState(loadingSection());
     try {
       const params = {};
       if (search) params.search = search;
       if (category) params.category = category;
       if (verifiedOnly) params.verified_only = 'true';
-      const data = await timelineApi.get(patientId, params);
-      setItems(Array.isArray(data) ? data : []);
+      // A non-array success is a failure, not "no records found".
+      const data = expectArray(await timelineApi.get(patientId, params), 'your medical timeline');
+      setItems(data);
+      setListState(readySection());
     } catch (err) {
-      setError(err.message);
-      setItems([]);
-    } finally {
-      setLoading(false);
+      // Records already on screen stay; the filter failure is reported instead.
+      setListState(failedSection(err));
     }
   }, [patientId, search, category, verifiedOnly]);
 
@@ -54,11 +56,13 @@ export default function MedicalTimelinePage() {
 
   const handleSelectItem = async (item) => {
     setSelected(item);
+    setEpisodeError('');
     try {
       const episode = await timelineApi.getEpisode(patientId, item.id);
       setSelected(episode);
-    } catch {
-      // keep the basic item data
+    } catch (err) {
+      // Keep the basic item visible, but never hide the failure.
+      setEpisodeError(err.message);
     }
   };
 
@@ -104,14 +108,16 @@ export default function MedicalTimelinePage() {
         </div>
       </SectionCard>
 
-      <ErrorBanner message={error} onDismiss={() => setError('')} />
-
       <div className="grid gap-6 lg:grid-cols-5">
         {/* Timeline list */}
         <div className="lg:col-span-3">
-          {loading ? (
-            <LoadingSpinner message="Loading your health timeline…" />
-          ) : displayItems.length === 0 ? (
+          <SectionState state={listState} label="your medical timeline" onRetry={loadTimeline} />
+          {listState.status === 'error' && displayItems.length > 0 && (
+            <p className="mt-2 text-xs text-slate-500">
+              Showing records loaded earlier; the latest request failed.
+            </p>
+          )}
+          {listState.status === 'ready' && displayItems.length === 0 && (
             <SectionCard>
               <EmptyState
                 icon={History}
@@ -119,11 +125,12 @@ export default function MedicalTimelinePage() {
                 description="Upload and verify medical documents to build your timeline."
               />
             </SectionCard>
-          ) : (
+          )}
+          {displayItems.length > 0 && (
             <div className="pl-2 space-y-0">
-              {displayItems.map((item) => (
+              {displayItems.map((item, index) => (
                 <TimelineItem
-                  key={item.id}
+                  key={item?.id ?? `timeline-${index}`}
                   item={item}
                   onClick={() => handleSelectItem(item)}
                 />
@@ -168,11 +175,24 @@ export default function MedicalTimelinePage() {
                 </div>
               )}
 
-              {selected.documents?.length > 0 && (
+              {episodeError && (
+                <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Linked episode details could not be loaded: {episodeError}{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleSelectItem(selected)}
+                    className="font-semibold underline"
+                  >
+                    Retry
+                  </button>
+                </p>
+              )}
+
+              {asArray(selected.documents).length > 0 && (
                 <div>
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Source Documents</p>
                   <ul className="mt-2 divide-y divide-slate-100">
-                    {selected.documents.map((doc) => (
+                    {asArray(selected.documents).map((doc) => (
                       <li key={doc.id} className="py-2 text-sm text-slate-700">
                         {doc.original_filename}
                         <StatusBadge status={doc.verification_status} />
