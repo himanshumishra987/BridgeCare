@@ -221,3 +221,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+.tools/
