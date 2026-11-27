@@ -1,0 +1,19 @@
+# BridgeCare AI Engine Dependencies
+#
+# SYSTEM PREREQUISITE:
+# Tesseract OCR executable must be installed separately on the host operating system:
+#   - Ubuntu / Debian:  sudo apt-get update && sudo apt-get install -y tesseract-ocr
+#   - macOS (Homebrew): brew install tesseract
+#   - Windows:          Download installer from https://github.com/UB-Mannheim/tesseract/wiki
+#                       and ensure 'tesseract.exe' is added to system PATH or configure
+#                       BRIDGECARE_INGESTION_TESSERACT_CMD in your environment.
+
+PyMuPDF>=1.23.0,<2.0.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+pydantic>=2.0.0,<3.0.0
+pydantic-settings>=2.0.0
+google-genai>=1.0.0
+elevenlabs>=2.0.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
